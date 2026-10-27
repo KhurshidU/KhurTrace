@@ -26,6 +26,12 @@ Scalar products are Lorentz invariant; the frame only decides which variables
 (masses, s/t/u, angles, energies) the answer is written in. Momentum
 conservation and on-shell conditions are imposed here, not in the calculator.
 In the cm and lab frames, symbols s, t, u in your expression are replaced too.
+
+RATES (--rate, formulas in rates.py from D. Morrissey's PHYS 528 notes)
+  1 -> 2 and 2 -> 2: closed-form decay width / CM cross section.
+  1 -> n and 2 -> n with n >= 3 final particles: Monte Carlo over phase space,
+    e.g. --process "p1 + p2 -> k1 + k2 + k3" --set E_cm=10 --rate
+
 """
 
 import argparse
@@ -33,6 +39,7 @@ from pathlib import Path
 
 import sympy as sp
 
+import rates
 from dirac_trace_calculator import (evaluate, latex_document, read_expression_file,
                                     show_latex_panel)
 
@@ -171,6 +178,15 @@ def main():
     parser.add_argument("--latex", type=Path, default=Path("kinematics_latex.txt"),
                         help="LaTeX output file (default: kinematics_latex.txt)")
     parser.add_argument("--no-panel", action="store_true", help="Do not open the window")
+    parser.add_argument("--rate", action="store_true",
+                        help="Also compute the decay width (rest) or cross section (cm)")
+    parser.add_argument("--symmetry", default="1",
+                        help="Symmetry factor S, e.g. 1/2 for two identical final particles")
+    parser.add_argument("--set", action="append", default=[], metavar="NAME=VALUE",
+                        help="Numerical value in GeV (overrides the PDG table in rates.py), "
+                             "e.g. m_nu_tau=0.01 or E_cm=10")
+    parser.add_argument("--events", type=int, default=100000,
+                        help="Monte Carlo events for 3 or more final particles")
     args = parser.parse_args()
 
     if args.input:
@@ -187,16 +203,39 @@ def main():
         masses[name.strip()] = symbol.strip()
 
     try:
-        rules = kinematic_rules(args.process, masses, args.frame)
-        print("\nScalar products:")
-        for key, value in rules.items():
-            print(f"  {key} = {sp.factor(value)}")
+        incoming, outgoing = parse_process(args.process)
+        many_body = len(outgoing) > 2
+        if many_body:
+            # No closed form: scalar products are evaluated numerically by --rate.
+            rules = {}
+        else:
+            rules = kinematic_rules(args.process, masses, args.frame)
+            print("\nScalar products:")
+            for key, value in rules.items():
+                print(f"  {key} = {sp.factor(value)}")
 
         result = evaluate(expression, rules)
         result = sp.factor_terms(sp.expand(result))
         print("\nResult:\n" + str(result))
 
-        args.latex.write_text(latex_document(expression, result))
+        latex = latex_document(expression, result)
+        if args.rate:
+            masses_in = [mass_value(masses.get(n, "m_" + n)) for n in incoming]
+            masses_out = [mass_value(masses.get(n, "m_" + n)) for n in outgoing]
+            overrides = {}
+            for item in args.set:
+                name, value = item.split("=", 1)
+                overrides[name.strip()] = float(value)
+            if many_body:
+                rate_lines = rates.monte_carlo_report(result, incoming, outgoing, masses_in,
+                                                      masses_out, sp.Rational(args.symmetry),
+                                                      overrides, args.events)
+            else:
+                rate_lines = rates.report(result, masses_in, masses_out, args.frame,
+                                          sp.Rational(args.symmetry), overrides)
+            latex += "\n% Rate (PHYS 528 notes, Sec. 2.3):\n" + "\n".join(rate_lines) + "\n"
+
+        args.latex.write_text(latex)
         print(f"LaTeX written to {args.latex}")
         if not args.no_panel:
             show_latex_panel(result, title="Trace with kinematics")
