@@ -238,7 +238,7 @@ def main():
         args.latex.write_text(latex)
         print(f"LaTeX written to {args.latex}")
         if not args.no_panel:
-            show_latex_panel(result, title="Trace with kinematics")
+            show_latex_panel(result, title="Trace with kinematics", expression=expression)
     except ValueError as error:
         parser.exit(2, f"Input error: {error}\n")
 

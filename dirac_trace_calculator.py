@@ -425,9 +425,35 @@ def evaluate(text, substitutions=None):
 
 
 class NestedSubscriptPrinter(LatexPrinter):
-    """Names with several underscores nest: m_nu_tau -> m_{\\nu_{\\tau}}."""
+    """Names with several underscores nest: m_nu_tau -> m_{\\nu_{\\tau}}.
+
+    Also prints the unevaluated input: traces, gamma matrices, slashed momenta.
+    """
+    panel = False  # matplotlib has no \slashed, so the panel overlays a slash
+
+    def _print_Function(self, expr, exp=None):
+        # SymPy skips _print_<Name> for sp.Function("Name") objects, so dispatch here.
+        method = getattr(self, "_print_" + expr.func.__name__, None)
+        if expr.func in (Trace, Gamma, Slash):
+            return method(expr, exp)
+        return super()._print_Function(expr, exp)
+
+    def _print_Trace(self, expr, exp=None):
+        latex = rf"\mathrm{{Tr}}\left[{self._print(expr.args[0])}\right]"
+        return latex if exp is None else f"{latex}^{{{exp}}}"
+
+    def _print_Gamma(self, expr, exp=None):
+        latex = tensor_latex(r"\gamma", expr.args, self)
+        return latex if exp is None else f"\\left({latex}\\right)^{{{exp}}}"
+
+    def _print_Slash(self, expr, exp=None):
+        p = self._print(expr.args[0])
+        latex = rf"{{{p}}}\!\!\!/\," if self.panel else rf"\slashed{{{p}}}"
+        return latex if exp is None else f"\\left({latex}\\right)^{{{exp}}}"
 
     def _print_Symbol(self, expr, *args, **kwargs):
+        if expr == G5:
+            return r"\gamma^{5}"
         parts = expr.name.split('_')
         if len(parts) < 3 or not all(parts):
             return super()._print_Symbol(expr, *args, **kwargs)
@@ -441,8 +467,15 @@ class NestedSubscriptPrinter(LatexPrinter):
         return out
 
 
-def to_latex(expr):
-    return NestedSubscriptPrinter().doprint(expr)
+def to_latex(expr, panel=False, **settings):
+    printer = NestedSubscriptPrinter(settings)
+    printer.panel = panel
+    return printer.doprint(expr)
+
+
+def initial_latex(expression, panel=False):
+    """LaTeX for the unevaluated input; long fractions print as 1/4 (...)."""
+    return to_latex(parse(expression), panel, long_frac_ratio=2)
 
 
 def latex_lines(result):
@@ -456,16 +489,19 @@ def latex_lines(result):
 
 
 def latex_document(expression, result):
+    initial = initial_latex(expression)
     aligned = " \\\\\n  &\\quad ".join(latex_lines(result))
     return ('% Conventions: four dimensions, metric (+---), epsilon^{0123} = +1\n'
+            + '% Needs \\usepackage{amsmath} and \\usepackage{slashed}\n'
             + ''.join(f'% Input: {line}\n' for line in expression.strip().splitlines())
-            + '\n% Inline:\n' + to_latex(result) + '\n'
-            + '\n% Multi-line (needs amsmath):\n\\begin{align*}\n  &' + aligned
-            + '\n\\end{align*}\n')
+            + '\n% Initial expression:\n' + initial + '\n'
+            + '\n% Result (inline):\n' + to_latex(result) + '\n'
+            + '\n% Initial expression = result, multi-line:\n\\begin{align*}\n  &'
+            + initial + ' \\\\\n  &= ' + aligned + '\n\\end{align*}\n')
 
 
-def show_latex_panel(result, title='Dirac trace result'):
-    """Render the result in a separate matplotlib window, one term per line."""
+def show_latex_panel(result, title='Dirac trace result', expression=None):
+    """Render the (initial expression and) result in a separate matplotlib window."""
     try:
         import matplotlib.pyplot as plt
     except ImportError:
@@ -473,6 +509,8 @@ def show_latex_panel(result, title='Dirac trace result'):
         return
     lines = latex_lines(result)
     lines[0] = '= ' + lines[0]
+    if expression is not None:
+        lines.insert(0, initial_latex(expression, panel=True))
     fig = plt.figure(figsize=(8, 0.55 * len(lines) + 0.6))
     fig.canvas.manager.set_window_title(title)
     texts = [fig.text(0.02, 1 - (k + 0.8) / (len(lines) + 0.6), f'${line}$', fontsize=15)
@@ -524,7 +562,7 @@ def main():
         args.latex.write_text(latex_document(expression, result))
         print(f'LaTeX written to {args.latex}')
         if not args.no_panel:
-            show_latex_panel(result)
+            show_latex_panel(result, expression=expression)
     except (ValueError, TypeError, SyntaxError, tokenize.TokenError, OSError) as error:
         parser.exit(2, f'Input error: {error}\n')
 
